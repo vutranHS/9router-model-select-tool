@@ -55,13 +55,24 @@ fn home_path(relative: &str) -> PathBuf { dirs::home_dir().unwrap_or_default().j
 fn candidates() -> Vec<(String, String, String, PathBuf)> { vec![
     ("claude".into(), "Claude Code".into(), "settings.json".into(), home_path(".claude/settings.json")),
     ("codex".into(), "Codex CLI".into(), "config.toml".into(), home_path(".codex/config.toml")),
+    ("cursor".into(), "Cursor".into(), "Settings UI".into(), home_path(".cursor")),
     ("cline".into(), "Cline".into(), "VS Code extension".into(), home_path(".vscode/extensions")),
     ("roo".into(), "Roo Code".into(), "VS Code extension".into(), home_path(".vscode/extensions")),
+    ("kilo".into(), "Kilo Code".into(), "VS Code extension".into(), home_path(".vscode/extensions")),
+    ("vibe".into(), "Mistral Vibe CLI".into(), "config.toml + .env".into(), home_path(".vibe/config.toml")),
     ("continue".into(), "Continue".into(), "config.json".into(), home_path(".continue/config.json")),
 ] }
 
 fn command_exists(command: &str) -> bool {
     std::env::var_os("PATH").into_iter().flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).any(|folder| folder.join(command).is_file())
+}
+
+fn extension_installed(prefixes: &[&str]) -> bool {
+    let Ok(entries) = fs::read_dir(home_path(".vscode/extensions")) else { return false; };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        prefixes.iter().any(|prefix| name.starts_with(prefix))
+    })
 }
 
 fn additional_tools() -> Vec<Tool> { vec![
@@ -74,7 +85,17 @@ fn additional_tools() -> Vec<Tool> { vec![
 #[tauri::command]
 fn detect_tools() -> Vec<Tool> {
     let mut tools: Vec<Tool> = candidates().into_iter().map(|(id, name, detail, path)| Tool {
-        id, name, detail, found: path.exists(), path: path.parent().unwrap_or(Path::new(".")).display().to_string(),
+        found: match id.as_str() {
+            "claude" => command_exists("claude") || home_path(".claude").exists(),
+            "codex" => command_exists("codex") || home_path(".codex").exists(),
+            "cursor" => command_exists("cursor") || Path::new("/Applications/Cursor.app").exists(),
+            "cline" => extension_installed(&["cline.cline", "saoudrizwan.claude-dev"]),
+            "roo" => extension_installed(&["rooveterinaryinc.roo-cline"]),
+            "kilo" => extension_installed(&["kilocode.kilo-code", "kilo-code.kilo-code"]),
+            "vibe" => command_exists("vibe") || home_path(".vibe").exists(),
+            _ => path.exists(),
+        },
+        id, name, detail, path: path.parent().unwrap_or(Path::new(".")).display().to_string(),
     }).collect();
     tools.extend(additional_tools());
     tools
@@ -143,7 +164,7 @@ fn codex_model(routes: &ModelRoutes) -> String {
     if routes.sonnet.starts_with("cx/") { routes.sonnet.clone() } else { "cx/gpt-5.6-terra".into() }
 }
 
-fn codex_config(routes: &ModelRoutes, optimizations: &Optimizations) -> toml::Value {
+fn codex_config(routes: &ModelRoutes, token: &str, base_url: &str, optimizations: &Optimizations) -> toml::Value {
     let effort = match optimizations.effort_level.as_str() {
         "max" => "xhigh",
         "auto" => "medium",
@@ -151,9 +172,18 @@ fn codex_config(routes: &ModelRoutes, optimizations: &Optimizations) -> toml::Va
     };
     let mut values = toml::map::Map::new();
     values.insert("model".into(), toml::Value::String(codex_model(routes)));
+    values.insert("model_provider".into(), toml::Value::String("9router".into()));
     values.insert("model_reasoning_effort".into(), toml::Value::String(effort.into()));
     values.insert("approval_policy".into(), toml::Value::String(if optimizations.bypass_permissions { "never" } else { "on-request" }.into()));
     values.insert("sandbox_mode".into(), toml::Value::String(if optimizations.bypass_permissions { "danger-full-access" } else { "workspace-write" }.into()));
+    let mut provider = toml::map::Map::new();
+    provider.insert("name".into(), toml::Value::String("9router".into()));
+    provider.insert("base_url".into(), toml::Value::String(base_url.into()));
+    provider.insert("wire_api".into(), toml::Value::String("responses".into()));
+    provider.insert("experimental_bearer_token".into(), toml::Value::String(token.into()));
+    let mut providers = toml::map::Map::new();
+    providers.insert("9router".into(), toml::Value::Table(provider));
+    values.insert("model_providers".into(), toml::Value::Table(providers));
     toml::Value::Table(values)
 }
 
@@ -243,7 +273,7 @@ fn apply_configuration(request: ApplyRequest) -> Result<Vec<String>, String> {
             backup(&id, &name, &path)?;
             if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
             let mut existing = fs::read_to_string(&path).ok().and_then(|s| s.parse::<toml::Value>().ok()).unwrap_or(toml::Value::Table(Default::default()));
-            merge_toml(&mut existing, codex_config(&request.routes, &settings));
+            merge_toml(&mut existing, codex_config(&request.routes, &request.token, &request.base_url, &settings));
             fs::write(&path, toml::to_string_pretty(&existing).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             changed.push(format!("{name}: original configuration snapshot saved and settings merged"));
         } else { changed.push(format!("{name}: detected; direct adapter pending")); }
