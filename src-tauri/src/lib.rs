@@ -67,6 +67,10 @@ fn command_exists(command: &str) -> bool {
     std::env::var_os("PATH").into_iter().flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).any(|folder| folder.join(command).is_file())
 }
 
+fn opencode_exists() -> bool {
+    command_exists("opencode") || home_path(".opencode/bin/opencode").is_file()
+}
+
 fn extension_installed(prefixes: &[&str]) -> bool {
     let Ok(entries) = fs::read_dir(home_path(".vscode/extensions")) else { return false; };
     entries.flatten().any(|entry| {
@@ -77,7 +81,7 @@ fn extension_installed(prefixes: &[&str]) -> bool {
 
 fn additional_tools() -> Vec<Tool> { vec![
     Tool { id: "copilot-cli".into(), name: "GitHub Copilot CLI".into(), detail: "copilot command".into(), path: "PATH".into(), found: command_exists("copilot") },
-    Tool { id: "opencode".into(), name: "OpenCode".into(), detail: "opencode command".into(), path: "PATH".into(), found: command_exists("opencode") },
+    Tool { id: "opencode".into(), name: "OpenCode".into(), detail: "opencode command".into(), path: home_path(".opencode/bin/opencode").display().to_string(), found: opencode_exists() },
     Tool { id: "openclaw".into(), name: "OpenClaw".into(), detail: "openclaw command".into(), path: "PATH".into(), found: command_exists("openclaw") },
     Tool { id: "factory".into(), name: "Factory Droid".into(), detail: "droid command".into(), path: "PATH".into(), found: command_exists("droid") },
 ] }
