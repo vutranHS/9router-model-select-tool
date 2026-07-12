@@ -173,7 +173,7 @@ function App() {
       <nav>{[[1,"Detect tools",Code2],[2,"Choose a scenario",Sparkles],[3,"Review changes",Copy],[4,"Apply safely",ShieldCheck],[5,"Health check",HeartPulse]].map(([n,label,Icon]: any) => <button className={`nav-step ${step === n ? "active" : ""} ${step > n ? "done" : ""}`} key={n} onClick={() => step > n && setStep(n)}><i>{step > n ? <Check size={14}/> : n}</i><span>{label}</span>{step > n && <Check className="trail" size={15}/>}</button>)}</nav>
       <div className="privacy"><LockKeyhole size={16}/><div><strong>Your token stays local</strong><small>Written only to the selected tool’s local config</small></div></div>
       <button className="support"><Github size={17}/>Help & documentation</button>
-      <span className="version">v0.1.4 · macOS</span>
+      <span className="version">v0.1.5 · macOS</span>
     </aside>
     <section className="workspace">
       <header><div><span className="eyebrow">SETUP WIZARD</span><h1>{["Find your tools","Pick how you work","Review before we change anything","Apply your setup","Everything looks good"][step-1]}</h1></div><button className="close"><X size={19}/></button></header>

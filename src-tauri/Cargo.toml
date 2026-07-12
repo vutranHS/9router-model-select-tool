@@ -1,6 +1,6 @@
 [package]
 name = "nine-router-model-selector"
-version = "0.1.4"
+version = "0.1.5"
 description = "Desktop model selector and configuration tool for 9router"
 edition = "2021"
 default-run = "nine-router-model-selector"

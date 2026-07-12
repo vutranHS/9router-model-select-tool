@@ -914,38 +914,55 @@ fn run_command(command: &mut std::process::Command) -> Result<String, String> {
     }
 }
 
+fn installed_command(name: &str) -> Result<std::process::Command, String> {
+    let path = command_path(name).ok_or_else(|| format!("{name} was not found. Re-scan tools after installing it."))?;
+    Ok(std::process::Command::new(path))
+}
+
+fn ensure_rtk() -> Result<std::process::Command, String> {
+    if command_path("rtk").is_none() {
+        run_command(std::process::Command::new("/bin/sh").args(["-lc", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]))?;
+    }
+    installed_command("rtk")
+}
+
 #[tauri::command]
 fn install_optimizer(tool: String, target_tool: String) -> Result<String, String> {
     match (tool.as_str(), target_tool.as_str()) {
         ("rtk", "claude") => {
-            if std::process::Command::new("rtk").arg("--version").output().is_err() {
-                run_command(std::process::Command::new("sh").args(["-lc", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]))?;
-            }
-            run_command(std::process::Command::new("rtk").args(["init", "--global", "--auto-patch"]))?;
+            let mut rtk = ensure_rtk()?;
+            rtk.args(["init", "--global", "--auto-patch"]);
+            run_command(&mut rtk)?;
             Ok("RTK installed and Claude Code hook enabled.".into())
         }
         ("rtk", "cursor") => {
-            if std::process::Command::new("rtk").arg("--version").output().is_err() {
-                run_command(std::process::Command::new("sh").args(["-lc", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]))?;
-            }
-            run_command(std::process::Command::new("rtk").args(["init", "--agent", "cursor", "--global", "--auto-patch"]))?;
+            let mut rtk = ensure_rtk()?;
+            rtk.args(["init", "--agent", "cursor", "--global", "--auto-patch"]);
+            run_command(&mut rtk)?;
             Ok("RTK installed and Cursor hook enabled.".into())
         }
         ("rtk", "codex") => {
-            if std::process::Command::new("rtk").arg("--version").output().is_err() {
-                run_command(std::process::Command::new("sh").args(["-lc", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"]))?;
-            }
-            run_command(std::process::Command::new("rtk").args(["init", "--codex", "--global"]))?;
+            let mut rtk = ensure_rtk()?;
+            rtk.args(["init", "--codex", "--global"]);
+            run_command(&mut rtk)?;
             Ok("RTK installed with its global hook setup for Codex.".into())
         }
         ("ponytail", "claude") => {
-            run_command(std::process::Command::new("claude").args(["plugin", "marketplace", "add", "DietrichGebert/ponytail"]))?;
-            run_command(std::process::Command::new("claude").args(["plugin", "install", "ponytail@ponytail"]))?;
+            let mut claude = installed_command("claude")?;
+            claude.args(["plugin", "marketplace", "add", "DietrichGebert/ponytail"]);
+            run_command(&mut claude)?;
+            let mut claude = installed_command("claude")?;
+            claude.args(["plugin", "install", "ponytail@ponytail"]);
+            run_command(&mut claude)?;
             Ok("Ponytail installed. Start a new Claude Code session to activate it.".into())
         }
         ("ponytail", "codex") => {
-            run_command(std::process::Command::new("codex").args(["plugin", "marketplace", "add", "DietrichGebert/ponytail"]))?;
-            run_command(std::process::Command::new("codex").args(["plugin", "add", "ponytail@ponytail"]))?;
+            let mut codex = installed_command("codex")?;
+            codex.args(["plugin", "marketplace", "add", "DietrichGebert/ponytail"]);
+            run_command(&mut codex)?;
+            let mut codex = installed_command("codex")?;
+            codex.args(["plugin", "add", "ponytail@ponytail"]);
+            run_command(&mut codex)?;
             Ok("Ponytail installed for Codex. Trust its lifecycle hooks in /hooks, then start a new task.".into())
         }
         ("ponytail", "cursor") => Err("Ponytail for Cursor is instruction-based; the app will not inject its instructions automatically.".into()),
