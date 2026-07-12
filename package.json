@@ -1,14 +1,14 @@
 {
   "name": "9router-model-selector",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "tauri": "tauri",
     "build:mac-arm": "tauri build --target aarch64-apple-darwin --bundles dmg",
-    "build:windows-x64": "tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis"
+    "build:windows-x64": "tauri build --target x86_64-pc-windows-msvc --bundles nsis"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

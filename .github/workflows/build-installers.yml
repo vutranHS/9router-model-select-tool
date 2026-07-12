@@ -51,7 +51,6 @@ jobs:
         with:
           name: 9router-model-selector-windows-x64
           path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
 
   release:
@@ -68,5 +67,4 @@ jobs:
           generate_release_notes: true
           files: |
             release-assets/*.dmg
-            release-assets/*.msi
             release-assets/*-setup.exe
