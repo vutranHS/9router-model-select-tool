@@ -1,0 +1,24 @@
+[package]
+name = "nine-router-model-selector"
+version = "0.1.0"
+description = "Desktop model selector and configuration tool for 9router"
+edition = "2021"
+default-run = "nine-router-model-selector"
+
+[lib]
+name = "nine_router_model_selector_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "9router-model-selector"
+path = "src/bin/9router.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+toml = "0.8"
