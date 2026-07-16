@@ -1,0 +1,12 @@
+{
+  "name": "9router-cloakbrowser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "cloakbrowser": "0.4.3",
+    "playwright-core": "1.56.1",
+    "zod": "3.25.76"
+  }
+}

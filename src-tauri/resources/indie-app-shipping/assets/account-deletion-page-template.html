@@ -1,0 +1,50 @@
+<!--
+Account Deletion page — TEMPLATE
+Google Play requires a PUBLIC web URL (reachable without installing the app) where
+users can request account + data deletion, if your app supports accounts. This URL
+must match the one in your privacy policy and your Data safety form. Apple expects an
+in-app deletion path; this page is mainly for Play's web-link requirement, but having
+it also satisfies a "where do I delete my data" question on both platforms.
+
+Fill the [bracketed] placeholders. Host it at a stable public URL (e.g. on your own
+domain). Not legal advice — adapt to the laws that apply to your users.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delete your account & data — [App Name]</title>
+</head>
+<body>
+  <main>
+    <h1>Delete your [App Name] account and data</h1>
+
+    <p>This page explains how to delete your [App Name] account and the data
+       associated with it.</p>
+
+    <h2>Delete inside the app (fastest)</h2>
+    <ol>
+      <li>Open [App Name].</li>
+      <li>Go to <strong>Settings → Delete Account</strong>.</li>
+      <li>Confirm. Your account and associated data are removed [immediately / within N days].</li>
+    </ol>
+
+    <h2>Request deletion by email</h2>
+    <p>If you can't access the app, email
+       <a href="mailto:[support email]">[support email]</a> from the address linked
+       to your account with the subject <em>"Delete my account"</em>. We will verify
+       ownership and process the request within [N] days.</p>
+
+    <h2>What gets deleted</h2>
+    <ul>
+      <li><strong>Deleted:</strong> [account record, profile, user-generated content, …].</li>
+      <li><strong>Retained (and for how long / why):</strong> [e.g. purchase/transaction
+          records kept for [N] for legal/accounting reasons], then deleted.</li>
+    </ul>
+
+    <p>Questions: <a href="mailto:[support email]">[support email]</a>.
+       See our <a href="[privacy policy URL]">Privacy Policy</a>.</p>
+  </main>
+</body>
+</html>

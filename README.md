@@ -1,78 +1,200 @@
 # 9router Model Selector
 
-A Tauri desktop model-selection and configuration tool for 9router. It is separate from the 9router proxy itself.
+Desktop companion app for configuring AI coding tools to use models exposed by a 9router gateway.
 
-## What it does
+This project is **not** the 9router proxy. It discovers the coding tools installed on the current machine, explores the models enabled for a 9router API key, and safely writes the supported client configurations.
 
-- Detects supported tools without treating a generic VS Code extensions folder as proof that a specific extension is installed.
-- Detects CLIs by executable path (including common GUI-missing `PATH` locations, NVM, Bun, npm-global and OpenCode installs), not merely because a stale config directory exists.
-- Lets users select a usage-oriented scenario such as `daily_coding`, which maps the Opus, Sonnet, and Haiku aliases directly to 9router model IDs.
-- Shows the exact generated settings before applying them.
-- Creates a timestamped original-state snapshot before updating a configuration file.
-- Refuses to overwrite malformed JSON/TOML, uses atomic writes, and validates the required direct model IDs as well as the 9router API key.
-- Sets proactive Claude Code auto-compaction from the smallest verified context window in the selected direct-model scenario.
-- Provides a clear post-setup status screen.
+## Install from GitHub Releases
 
-## Tool support policy
+Download the newest installer from:
 
-| Tool | Setup mode | Notes |
+**[Latest GitHub Release](https://github.com/vutranHS/9router-model-select-tool/releases/latest)**
+
+### macOS Apple Silicon
+
+Supported architecture: Apple Silicon (`arm64`, including M1, M2, M3, and M4).
+
+1. Download the file ending in `_aarch64.dmg`.
+2. Open the DMG.
+3. Drag **9router Model Selector** into **Applications**.
+4. Open the app from Applications.
+
+Release builds are signed and notarized when the Apple signing secrets are available to the release workflow. If macOS blocks an older or unsigned build, open **System Settings → Privacy & Security** and review the blocked-app message before choosing **Open Anyway**.
+
+An Intel macOS installer is not currently published.
+
+### Windows
+
+Supported architecture: Windows x64.
+
+1. Download the file ending in `_x64-setup.exe`.
+2. Run the installer.
+3. Launch **9router Model Selector** from the Start menu.
+
+The Windows installer may show a Microsoft Defender SmartScreen warning until a Windows code-signing certificate is added to the release pipeline. Only continue after confirming that the installer came from this repository's official Releases page.
+
+All published versions and release notes are available on the [Releases page](https://github.com/vutranHS/9router-model-select-tool/releases).
+
+## How it works
+
+The app uses a guided setup flow:
+
+1. **Detect tools** — finds installed coding tools using executable paths and exact editor extension IDs.
+2. **Connect gateway** — validates the 9router base URL and API key.
+3. **Explore models** — fetches the enabled chat and capability-specific model endpoints.
+4. **Assign models** — selects a direct model for each coding tool. It does not depend on a 9router combo.
+5. **Configure limits** — reviews or edits maximum input and output tokens so each tool can compact before the selected model overflows.
+6. **Route capabilities** — assigns one or more available models to image generation, web search/fetch, speech, transcription, embeddings, and other supported skills.
+7. **Choose integrations** — optionally installs local skills and token-saving adapters.
+8. **Review and apply** — previews changes, validates the key and selected model IDs again, creates backups, and writes the supported configurations.
+9. **Restore if needed** — restores a timestamped original-state snapshot from the app.
+
+Known Claude and Codex model limits are prefilled. Unknown or newly added models remain editable, so a user can provide the correct input and output limits without waiting for an app update. Automatic compaction targets roughly 80% of the effective context window.
+
+## Claude Code mapping
+
+Claude Code exposes more routing controls than most coding tools. The app therefore lets the user map all four entries independently:
+
+- Default model
+- Opus alias
+- Sonnet alias
+- Haiku alias
+
+Each entry may point directly to any compatible model returned by the gateway, including a Codex model. Claude Code's compaction limit is based on the smallest configured route so that helper-model calls do not overflow.
+
+Other supported coding tools generally use one selected default model plus that tool's own context and compaction settings.
+
+## Tool support
+
+| Tool | Setup mode | Current behavior |
 | --- | --- | --- |
-| Claude Code | Automatic | Merges 9router endpoint, token, model aliases, compaction, effort, and permissions into `~/.claude/settings.json`. |
-| Codex CLI | Automatic profile | Writes `~/.codex/9router.config.toml`; the app deliberately does not modify global `~/.codex/config.toml`. Start CLI with `codex --profile 9router`. |
-| OpenCode | Automatic | Adds an OpenAI-compatible `9router` provider to the global OpenCode config. |
-| OpenClaw | Automatic | Adds a `models.providers.9router` OpenAI-compatible provider through its own config command. |
-| Factory Droid | Automatic | Adds a 9router BYOK custom model to `~/.factory/settings.json`. |
-| Pi | Automatic | Adds an OpenAI-compatible `9router` provider to `~/.pi/agent/models.json`. |
-| GitHub Copilot (VS Code) | Guided | Its Model providers UI supports an OpenAI-compatible BYOK provider; its credential-store state is not edited directly. |
-| GitHub Copilot CLI | Guided | BYOK uses shell environment variables; the app does not edit shell startup files silently. |
-| Cursor | Guided | Its OpenAI base-URL override is global and can disable built-in OpenAI models, so it must be confirmed in Cursor Settings. |
-| Cline, Roo Code, Kilo Code | Guided | They support compatible providers, but credentials/settings are extension-managed; the app does not write VS Code extension state directly. |
-| Mistral Vibe CLI | Guided | Its provider preset needs both `~/.vibe/config.toml` and a token environment source; the app will not create an incomplete two-file setup. |
-| Continue | Guided | It supports an OpenAI-compatible model in its YAML configuration, but extension-owned state is not modified directly. |
-| Hermes | Guided | Its `hermes model` Custom endpoint workflow supports an OpenAI-compatible URL, key, model, and context length. |
+| Claude Code | Automatic | Merges the endpoint, API key, default/Opus/Sonnet/Haiku routes, context-aware compaction, effort, permissions, and attribution preferences into `~/.claude/settings.json`. |
+| Codex CLI | Automatic profile | Writes `~/.codex/9router.config.toml` and keeps the global config untouched. Start it with `codex --profile 9router`. |
+| OpenCode | Automatic | Merges an OpenAI-compatible `9router` provider, selected model, model limits, and compaction settings into `~/.config/opencode/opencode.json`. |
+| OpenClaw | Automatic | Configures the provider, primary model, context/output limits, and compaction through OpenClaw's configuration interface. |
+| Factory Droid | Automatic | Adds a 9router BYOK model with context, output, and compaction limits to `~/.factory/settings.json`. |
+| Pi | Automatic | Adds the provider and model metadata to `~/.pi/agent/models.json` and selects it in `~/.pi/agent/settings.json`. |
+| Cursor | Guided | Shows the required OpenAI-compatible endpoint/model settings without silently replacing Cursor-managed credentials. |
+| Cline, Roo Code, Kilo Code | Guided | Provides the selected endpoint and model values; extension-owned secret storage is not edited directly. |
+| GitHub Copilot for VS Code | Guided | Uses the documented BYOK/model-provider UI instead of modifying VS Code secret storage. |
+| GitHub Copilot CLI | Guided | Shows the required environment-based BYOK setup without editing shell startup files. |
+| Mistral Vibe CLI, Continue, Hermes | Guided | Provides the selected gateway values while avoiding incomplete or unsafe partial configuration. |
 
-Gemini CLI has a Gemini-API base-URL override rather than a documented OpenAI-compatible adapter. Windsurf and Google Antigravity have no documented, safe user-level custom-endpoint configuration. They are intentionally not changed.
+Only installed tools are shown in the apply flow. Tools without a documented and reliable custom OpenAI-compatible endpoint are not automatically overridden.
 
-## Reasoning presets
+## Capability routes
 
-Claude Code supports `low`, `medium`, `high`, `xhigh`, and `max`. Codex models advertise their supported effort values; current Codex models use `low`, `medium`, `high`, and `xhigh`. The app maps the shared tiers one-to-one and safely caps legacy/Claude-only `max` at Codex `xhigh`.
+When supported by the gateway, the app explores:
 
-| Scenario | Claude Code | Codex | Rationale |
-| --- | --- | --- | --- |
-| Daily Coding | `medium` | `medium` | Best speed/depth balance for regular implementation. |
-| Direct Coding | `high` | `high` | Longer-running implementation and debugging. |
-| Premium | `high` | `high` | Quality-sensitive work without maximum latency/cost. |
-| Claude Only | `high` | `high` | Uses the 1M-context Claude route while retaining strong planning. |
-| Codex Only | `high` | `high` | Strong direct Codex coding route. |
-| Heavy Reasoning | `max` | `xhigh` | Deep investigations, major refactors, and hard tradeoffs. |
+- Chat models
+- Image generation and image-to-text
+- Web search and web fetch
+- Text-to-speech
+- Speech-to-text
+- Embeddings
 
-Codex profiles set their own context window and auto-compaction threshold (80%); it is not inherited from the smaller Claude helper-model window. Claude Code retains the conservative smallest selected alias window.
+A route can use one or multiple enabled models. This allows, for example, a coding tool to use a Codex model while image generation is routed to Grok, Gemini, or another image-capable provider.
 
-## Run it
+## Optional integrations
+
+The app can install or configure these separately from the main model routing:
+
+- **RTK** — token-saving command rewriting using the adapter supported by each detected coding tool.
+- **Ponytail** — coding-tool integration using Ponytail's supported host-specific setup.
+- **CloakBrowser / CloakMCP** — enabled by default for supported hosts to fetch pages that commonly block coding agents. The bundled runner uses an isolated temporary browser profile and cleans it up after success, timeout, or failure.
+- **Open Computer Use** — optional browser/computer interaction for visual testing and GUI debugging.
+- **Indie App Shipping** — optional mobile-app shipping workflow.
+- **Reverse Skill** — optional reverse-engineering workflow.
+- **Superpowers** — optional installation through the host's supported marketplace, plugin, or package mechanism.
+- **Git Guardian Pro** — optional bundled repository-safety skill for Claude Code and Codex. Installing it does not require Git; without Git it stays advisory and does not attempt repository initialization.
+
+Project-scoped adapters require a workspace folder. The app reports guided steps instead of guessing when an integration has no verified automatic installer for the selected host.
+
+## Safety
+
+- A `401 Unauthorized` response is reported as an invalid or expired API key.
+- The API key and every selected direct model are validated before automatic configuration is written.
+- Existing JSON and TOML files are parsed before modification; malformed files are rejected.
+- Supported adapters merge only the keys managed by the app.
+- Writes are atomic.
+- A timestamped original-state backup is created before each change.
+- Backups can be restored from the app.
+- API keys are hidden from previews and sent only to the configured gateway.
+- Extension-managed credential stores and shell startup files are not silently modified.
+
+## Run from source
+
+### Requirements
+
+- Node.js 22
+- Rust stable
+- The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/) for the current operating system
+
+Install dependencies and start the desktop app:
 
 ```bash
-npm install
+npm ci
 npm run tauri dev
 ```
 
-Create a production bundle with:
+Build and type-check the frontend:
 
 ```bash
-npm run tauri build
+npm run build
 ```
 
-The same native core is available from the CLI:
+Run the Rust test suite:
 
 ```bash
-cargo run --manifest-path src-tauri/Cargo.toml --bin 9router-model-selector -- setup --model cc/claude-sonnet-5 --token <token>
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+Create a local installer:
+
+```bash
+# macOS Apple Silicon
+npm run build:mac-arm
+
+# Windows x64, run on Windows
+npm run build:windows-x64
+```
+
+## Command-line setup
+
+The native core also exposes a lower-level CLI for a direct Claude Code setup:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml \
+  --bin 9router-model-selector -- \
+  setup --model cc/claude-sonnet-5 --token <9router-api-key>
+```
+
+The desktop app is recommended because it performs model discovery, per-tool routing, limit review, optional integration setup, and restore management.
+
+## Release process
+
+The GitHub Actions workflow builds:
+
+- A signed/notarized Apple Silicon DMG when the Apple secrets are configured.
+- A Windows x64 NSIS installer.
+
+Pushing a version tag triggers both builds and publishes their artifacts to a GitHub Release:
+
+```bash
+git tag v0.x.y
+git push origin v0.x.y
+```
+
+Keep the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` in sync before tagging. Apple signing and notarization setup is documented in [`.github/RELEASE.md`](.github/RELEASE.md).
 
 ## Project layout
 
-- `src/` — React wizard interface.
-- `src-tauri/src/lib.rs` — native detection, backup, JSON merge, and apply commands shared by the GUI boundary.
-- `src-tauri/` — Tauri desktop configuration.
+- `src/main.tsx` — React setup wizard and client-side setup state.
+- `src/styles.css` — desktop UI styling.
+- `src-tauri/src/lib.rs` — tool detection, endpoint exploration, validation, backups, configuration merging, integration installation, and restore commands.
+- `src-tauri/resources/` — bundled local resources such as the CloakBrowser runner.
+- `.github/workflows/build-installers.yml` — macOS ARM and Windows x64 release builds.
 
-## Safety model
+## Repository
 
-The UI validates the 9router token with `/models` before writing an automatic adapter. Existing keys are retained, a full original-state snapshot is created before each write, and API tokens are never displayed in the preview. Codex stores its custom-provider bearer token in its local `config.toml`, which is supported by Codex but should be protected with normal account-level filesystem permissions.
+[github.com/vutranHS/9router-model-select-tool](https://github.com/vutranHS/9router-model-select-tool)
