@@ -12,6 +12,7 @@ type CapabilitySkill = { id: string; name: string; description: string; modelGro
 type GatewayCatalog = { chatModels: GatewayModel[]; imageModels: GatewayModel[]; webModels: GatewayModel[]; ttsModels: GatewayModel[]; sttModels: GatewayModel[]; embeddingModels: GatewayModel[]; imageToTextModels: GatewayModel[]; skills: CapabilitySkill[] };
 type ToolSettings = { bypassPermissions: boolean; effortLevel: "low" | "medium" | "high" | "xhigh" | "max" };
 type BackupEntry = { toolId: string; toolName: string; originalPath: string; backupPath: string; createdAt: string };
+type BaselineStatus = { captured: boolean; createdAt: string | null; fileCount: number };
 type ValidationResult = { valid: boolean; modelCount: number; message: string };
 type ModelInfoResult = { modelId: string; details: unknown };
 type ImageRouteTestResult = { modelId: string; status: "ready" | "unauthorized" | "unavailable" | "error"; message: string };
@@ -62,6 +63,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [applied, setApplied] = useState<string[]>([]);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [baseline, setBaseline] = useState<BaselineStatus | null>(null);
 
   const foundTools = tools.filter(tool => tool.found);
   const selected = tools.filter(tool => tool.found && tool.selected);
@@ -127,7 +129,16 @@ function App() {
     catch { setMessage("Tool scan is only available in the desktop app."); }
     finally { setBusy(false); }
   }
-  useEffect(() => { void detect(); }, []);
+  async function refreshBaseline() { try { setBaseline(await invoke<BaselineStatus>("baseline_status")); } catch { /* desktop only */ } }
+  useEffect(() => { void detect(); void refreshBaseline(); }, []);
+
+  async function restoreOriginalSetup() {
+    if (!window.confirm("Restore every managed tool config back to how it was before 9router first ran? Your current 9router changes will be reverted.")) return;
+    setBusy(true);
+    try { setMessage(await invoke<string>("restore_baseline")); await refreshBackups(); }
+    catch (error) { setMessage(String(error)); }
+    finally { setBusy(false); }
+  }
 
   async function explore() {
     setBusy(true); setMessage("");
@@ -149,8 +160,9 @@ function App() {
       setToolModels(current => {
         const next = { ...current };
         selected.forEach(tool => {
-          const models = result.chatModels;
-          if (!models.some(model => model.id === next[tool.id])) next[tool.id] = models[0]?.id ?? "";
+          // Start with no model chosen; only drop a stale selection that the
+          // freshly discovered catalog no longer offers.
+          if (!result.chatModels.some(model => model.id === next[tool.id])) next[tool.id] = "";
         });
         return next;
       });
@@ -161,12 +173,15 @@ function App() {
         });
         return next;
       });
-      setClaudeModels(current => ({
-        defaultModel: current.defaultModel || result.chatModels[0]?.id || "",
-        opus: current.opus || result.chatModels[0]?.id || "",
-        sonnet: current.sonnet || result.chatModels[0]?.id || "",
-        haiku: current.haiku || result.chatModels[0]?.id || "",
-      }));
+      setClaudeModels(current => {
+        const keep = (id: string) => (result.chatModels.some(model => model.id === id) ? id : "");
+        return {
+          defaultModel: keep(current.defaultModel),
+          opus: keep(current.opus),
+          sonnet: keep(current.sonnet),
+          haiku: keep(current.haiku),
+        };
+      });
       setMessage(`Gateway verified · ${result.chatModels.length} chat model(s) discovered.`);
     } catch (error) { setCatalog(null); setMessage(String(error)); }
     finally { setBusy(false); }
@@ -252,7 +267,7 @@ function App() {
   const titles = ["Find your tools", "Explore your gateway", "Choose capability routes", "Review your setup", "Apply safely", "Setup complete"];
 
   return <main><style>{`.workspace{height:100vh}.page{flex:1;min-height:0}.gateway-panel,.model-panel,.skill-card,.apply-target-panel,.option-panel,.backup-panel{border:1px solid #303931;border-radius:11px;background:#151b16;padding:16px}.gateway-panel{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end}.gateway-panel label,.model-panel label,.claude-mapping label{display:grid;gap:6px;color:#aab5aa;font-size:12px}.gateway-panel input,.gateway-panel select,.model-panel select,.claude-mapping select,.option-panel select{width:100%;min-width:0;color:#eaf2e8;background:#101510;border:1px solid #3a493a;border-radius:7px;padding:10px;font:12px 'DM Mono'}.claude-mapping{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px;padding:14px;border:1px solid #303931;border-radius:11px;background:#151b16}.catalog-summary{display:flex;flex-wrap:wrap;gap:8px;margin:15px 0}.catalog-summary span{border:1px solid #364237;border-radius:999px;padding:6px 9px;color:#b9c7b7;font:11px 'DM Mono'}.model-panel{margin-top:12px}.model-panel>div{display:grid;grid-template-columns:34px 1fr minmax(220px,1.25fr);align-items:center;gap:10px}.model-panel small,.skill-card small{display:block;color:#8e9b8e;font:11px 'DM Mono';margin-top:3px}.skill-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.skill-card{position:relative;text-align:left;min-height:142px}.skill-card.disabled{opacity:.56}.skill-card>header{height:auto;padding:0;display:flex;gap:10px;align-items:center}.skill-card header strong{font-size:14px}.skill-card p{font-size:12px;color:#9eaa9e;line-height:1.45;margin:12px 0}.skill-card button{border:1px solid #3b493c;background:#101510;border-radius:7px;padding:7px 9px;color:#d7e3d5;font-size:12px}.skill-card button.active{background:#294221;border-color:#a9f26b;color:#caff9e}.route-models{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}.route-models button{font:10px 'DM Mono';max-width:100%;overflow:hidden;text-overflow:ellipsis}.route-models button.selected{border-color:#a9f26b;color:#caff9e}.image-route{border-top:1px solid #2b342c;margin-top:12px;padding-top:10px;display:grid;gap:7px}.image-route code{font:10px 'DM Mono';color:#c8ff9b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.image-route>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.route-status{font-size:10px;border-radius:999px;padding:4px 7px;border:1px solid #4b574b;color:#b9c6b7}.route-status.ready{border-color:#a9f26b;color:#baff91}.route-status.unavailable{border-color:#d6a866;color:#ffd48f}.route-status.unauthorized,.route-status.error{border-color:#dd6b61;color:#ffaaa3}.route-status.note{color:#99a599}.model-info{margin-top:12px;padding:10px;border-radius:8px;background:#101510;border:1px solid #303931;font:10px/1.45 'DM Mono';color:#b9c7b7;white-space:pre-wrap;max-height:150px;overflow:auto}.review-block{margin-top:13px}.review-block h3{font-size:13px;margin:0 0 8px;color:#cbd7c9}.review-list{border:1px solid #303931;border-radius:11px;overflow:hidden;background:#151b16}.review-list>div{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #2b342c}.review-list>div:last-child{border-bottom:0}.review-list code{color:#c8ff9b;font:11px 'DM Mono';margin-left:auto;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.notice{margin-top:13px;color:#aebaae;background:#192019;border:1px solid #2e3a2e;border-radius:9px;padding:11px 13px;font-size:12px;line-height:1.45}.apply-target-panel,.option-panel{margin-top:13px}.apply-target-panel label,.option-panel label{display:grid;grid-template-columns:1fr auto;align-items:center;gap:18px}.apply-target-panel strong,.option-panel strong{display:block;font-size:14px;color:#e6eee4}.apply-target-panel small,.option-panel small{display:block;margin-top:4px;font-size:12px;color:#93a093}.option-panel label+label{border-top:1px solid #2b342c;margin-top:14px;padding-top:14px}.option-panel input{width:18px;height:18px;accent-color:#a9f26b}.backup-panel{max-width:620px;margin:20px auto;text-align:left}.backup-list>div{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #2b342c;padding:10px 0}.backup-list small{display:block;color:#8d998d;font:11px 'DM Mono'}`}</style>
-    <aside><div className="brand"><span className="brand-mark"><span>9</span></span><span>Model Selector</span></div><nav>{[[1,"Detect tools",Code2],[2,"Explore gateway",Eye],[3,"Skills & routes",Layers3],[4,"Review",Copy],[5,"Apply safely",ShieldCheck],[6,"Health check",HeartPulse]].map(([number, label, Icon]: any) => <button className={`nav-step ${step === number ? "active" : ""} ${step > number ? "done" : ""}`} key={number} onClick={() => step > number && setStep(number)}><i>{step > number ? <Check size={14}/> : number}</i><span>{label}</span>{step > number && <Check className="trail" size={15}/>}</button>)}</nav><div className="privacy"><LockKeyhole size={16}/><div><strong>Your token stays local</strong><small>Used only for gateway discovery and selected tool configs</small></div></div><button className="support"><Github size={17}/>Help & documentation</button><span className="version">dynamic catalog · dev</span></aside>
+    <aside><div className="brand"><span className="brand-mark"><span>9</span></span><span>Model Selector</span></div><nav>{[[1,"Detect tools",Code2],[2,"Explore gateway",Eye],[3,"Skills & routes",Layers3],[4,"Review",Copy],[5,"Apply safely",ShieldCheck],[6,"Health check",HeartPulse]].map(([number, label, Icon]: any) => <button className={`nav-step ${step === number ? "active" : ""} ${step > number ? "done" : ""}`} key={number} onClick={() => step > number && setStep(number)}><i>{step > number ? <Check size={14}/> : number}</i><span>{label}</span>{step > number && <Check className="trail" size={15}/>}</button>)}</nav><div className="privacy"><LockKeyhole size={16}/><div><strong>Your token stays local</strong><small>Used only for gateway discovery and selected tool configs</small></div></div>{baseline?.captured && <button className="support" disabled={busy} title={baseline.createdAt ? `Original snapshot captured ${new Date(Number(baseline.createdAt)).toLocaleString()} · ${baseline.fileCount} file(s)` : undefined} onClick={restoreOriginalSetup}><Undo2 size={17}/>Restore original setup</button>}<button className="support"><Github size={17}/>Help & documentation</button><span className="version">dynamic catalog · dev</span></aside>
     <section className="workspace"><header><div><span className="eyebrow">9ROUTER SETUP</span><h1>{titles[step - 1]}</h1></div><button className="close"><X size={19}/></button></header>
       {step === 1 && <div className="page detect-page"><div className="intro"><p>Only installed tools are shown. Pick the tools that should receive their own 9router model configuration.</p><button className="scan" onClick={detect} disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <RefreshCw size={17}/>} Scan again</button></div><div className="tool-list">{foundTools.map(tool => <label className="tool" key={tool.id}><input type="checkbox" checked={tool.selected} onChange={() => setTools(current => current.map(item => item.id === tool.id ? { ...item, selected: !item.selected } : item))}/><span className="checkbox">{tool.selected && <Check size={14}/>}</span><span className="tool-logo">{toolLogo(tool)}</span><span className="tool-copy"><strong>{tool.name}</strong><small>{tool.detail}</small></span><span className="found"><CircleCheck size={15}/>Found</span><span className="path">{tool.path}</span></label>)}</div></div>}
       {step === 2 && <div className="page">
@@ -271,15 +286,15 @@ function App() {
               {tool.id === "claude" ? <>
                 <div><span className="tool-logo">{toolLogo(tool)}</span><span><strong>Claude Code</strong><small>Choose its startup model, then map each Claude alias. Auto-compaction follows the smallest input window among all four routes.</small></span></div>
                 <div className="gateway-panel" style={{ marginTop: 12 }}>
-                  <label>Default model<select value={claudeModels.defaultModel} onChange={event => setClaudeModels(current => ({ ...current, defaultModel: event.target.value }))}>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
-                  <label>Opus alias<select value={claudeModels.opus} onChange={event => setClaudeModels(current => ({ ...current, opus: event.target.value }))}>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
-                  <label>Sonnet alias<select value={claudeModels.sonnet} onChange={event => setClaudeModels(current => ({ ...current, sonnet: event.target.value }))}>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
-                  <label>Haiku alias<select value={claudeModels.haiku} onChange={event => setClaudeModels(current => ({ ...current, haiku: event.target.value }))}>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
+                  <label>Default model<select value={claudeModels.defaultModel} onChange={event => setClaudeModels(current => ({ ...current, defaultModel: event.target.value }))}><option value="" disabled>Select a model…</option>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
+                  <label>Opus alias<select value={claudeModels.opus} onChange={event => setClaudeModels(current => ({ ...current, opus: event.target.value }))}><option value="" disabled>Select a model…</option>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
+                  <label>Sonnet alias<select value={claudeModels.sonnet} onChange={event => setClaudeModels(current => ({ ...current, sonnet: event.target.value }))}><option value="" disabled>Select a model…</option>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
+                  <label>Haiku alias<select value={claudeModels.haiku} onChange={event => setClaudeModels(current => ({ ...current, haiku: event.target.value }))}><option value="" disabled>Select a model…</option>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
                 </div>
               </> : <div>
                 <span className="tool-logo">{toolLogo(tool)}</span>
                 <span><strong>{tool.name}</strong><small>{models.length ? `${models.length} enabled model(s) — one default model` : "No enabled model discovered"}</small></span>
-                <label>Default model<select value={toolModels[tool.id] ?? ""} disabled={!models.length} onChange={event => setToolModels(current => ({ ...current, [tool.id]: event.target.value }))}>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
+                <label>Default model<select value={toolModels[tool.id] ?? ""} disabled={!models.length} onChange={event => setToolModels(current => ({ ...current, [tool.id]: event.target.value }))}><option value="" disabled>Select a model…</option>{models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
               </div>}
             </div>;
           })}

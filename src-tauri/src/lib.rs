@@ -123,6 +123,56 @@ struct BackupEntry {
     created_at: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BaselineEntry {
+    tool_id: String,
+    tool_name: String,
+    original_path: String,
+    original_existed: bool,
+    stored_file: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BaselineManifest {
+    created_at: String,
+    entries: Vec<BaselineEntry>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BaselineStatus {
+    captured: bool,
+    created_at: Option<String>,
+    file_count: usize,
+}
+
+// Provenance for non-file optimizer installs (RTK / Ponytail / Superpowers).
+// The file-baseline reverts config files; these records let a restore undo the
+// plugin/marketplace/PATH side effects that do not live in a managed file.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvenanceEntry {
+    feature: String,
+    tool: String,
+    installed_by_9router: bool,
+    // Ordered [program, args...] command arrays; spawned directly, never a shell.
+    uninstall: Vec<Vec<String>>,
+    // Surfaced in the restore report when non-empty (manual-step guidance).
+    note: String,
+    // RTK-on-Windows only: directory to strip from the persistent User PATH.
+    rtk_path_dir: String,
+    // RTK-on-Windows only: rtk.exe to delete on restore.
+    rtk_binary: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvenanceStore {
+    entries: Vec<ProvenanceEntry>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ValidationResult {
@@ -1387,6 +1437,7 @@ fn install_superpowers_for_tools(tool_ids: &[String]) -> Result<Vec<String>, Str
     let mut changed = vec![];
 
     if tool_ids.iter().any(|id| id == "claude") {
+        let pre = optimizer_preexists("superpowers", "claude");
         let mut claude = installed_command("claude")?;
         claude.args([
             "plugin",
@@ -1396,12 +1447,15 @@ fn install_superpowers_for_tools(tool_ids: &[String]) -> Result<Vec<String>, Str
             "superpowers@claude-plugins-official",
         ]);
         run_command(&mut claude)?;
+        record_optimizer_install("superpowers", "claude", pre);
         changed.push("Claude Code: Superpowers installed from the official Claude marketplace; start a new session.".into());
     }
     if tool_ids.iter().any(|id| id == "codex") {
+        let pre = optimizer_preexists("superpowers", "codex");
         let mut codex = installed_command("codex")?;
         codex.args(["plugin", "add", "superpowers@openai-curated", "--json"]);
         run_command(&mut codex)?;
+        record_optimizer_install("superpowers", "codex", pre);
         changed.push(
             "Codex: Superpowers installed from the OpenAI-curated marketplace; start a new task."
                 .into(),
@@ -1411,6 +1465,7 @@ fn install_superpowers_for_tools(tool_ids: &[String]) -> Result<Vec<String>, Str
         changed.push(install_superpowers_opencode()?);
     }
     if tool_ids.iter().any(|id| id == "factory") {
+        let pre = optimizer_preexists("superpowers", "factory");
         let mut droid = installed_command("droid")?;
         droid.args([
             "plugin",
@@ -1422,12 +1477,14 @@ fn install_superpowers_for_tools(tool_ids: &[String]) -> Result<Vec<String>, Str
         let mut droid = installed_command("droid")?;
         droid.args(["plugin", "install", "superpowers@superpowers"]);
         run_command(&mut droid)?;
+        record_optimizer_install("superpowers", "factory", pre);
         changed.push(
             "Factory Droid: Superpowers marketplace and plugin installed; start a new session."
                 .into(),
         );
     }
     if tool_ids.iter().any(|id| id == "copilot-cli") {
+        let pre = optimizer_preexists("superpowers", "copilot-cli");
         let mut copilot = installed_command("copilot")?;
         copilot.args([
             "plugin",
@@ -1439,22 +1496,27 @@ fn install_superpowers_for_tools(tool_ids: &[String]) -> Result<Vec<String>, Str
         let mut copilot = installed_command("copilot")?;
         copilot.args(["plugin", "install", "superpowers@superpowers-marketplace"]);
         run_command(&mut copilot)?;
+        record_optimizer_install("superpowers", "copilot-cli", pre);
         changed.push(
             "GitHub Copilot CLI: Superpowers installed; start a new interactive session.".into(),
         );
     }
     if tool_ids.iter().any(|id| id == "pi") {
+        let pre = optimizer_preexists("superpowers", "pi");
         let mut pi = installed_command("pi")?;
         pi.args(["install", "git:github.com/obra/superpowers"]);
         run_command(&mut pi)?;
+        record_optimizer_install("superpowers", "pi", pre);
         changed
             .push("Pi: Superpowers installed as its official package; start a new session.".into());
     }
     if tool_ids.iter().any(|id| id == "antigravity") {
+        let pre = optimizer_preexists("superpowers", "antigravity");
         let mut antigravity =
             installed_command("agy").or_else(|_| installed_command("antigravity"))?;
         antigravity.args(["plugin", "install", "https://github.com/obra/superpowers"]);
         run_command(&mut antigravity)?;
+        record_optimizer_install("superpowers", "antigravity", pre);
         changed
             .push("Google Antigravity: Superpowers plugin installed; start a new session.".into());
     }
@@ -1950,6 +2012,450 @@ fn restore_backup(backup_path: String) -> Result<String, String> {
         fs::remove_file(&original_path).map_err(|e| e.to_string())?;
     }
     Ok(format!("{name}: restored the original configuration"))
+}
+
+fn baseline_directory() -> PathBuf {
+    home_path(".9router-model-selector/baseline")
+}
+
+// Union of every file the app is allowed to create or modify, across all
+// coding tools. Used to snapshot and restore the user's original setup.
+fn all_managed_targets() -> Vec<(String, String, PathBuf)> {
+    let mut targets: Vec<(String, String, PathBuf)> = candidates()
+        .into_iter()
+        .map(|(id, name, _, path)| (id, name, path))
+        .collect();
+    targets.extend(cloakbrowser_backup_targets());
+    targets.extend(computer_use_backup_targets());
+    targets.extend(ponytail_backup_targets());
+    targets.extend(superpowers_backup_targets());
+    targets.extend(git_guardian_backup_targets());
+    targets.extend(capability_backup_targets());
+    targets.extend(indie_app_shipping_backup_targets());
+    targets.extend(reverse_skill_backup_targets());
+    targets.push((
+        "codex".into(),
+        "Codex CLI".into(),
+        home_path(".codex/config.toml"),
+    ));
+    let mut seen = std::collections::HashSet::new();
+    targets.retain(|(_, _, path)| seen.insert(path.display().to_string()));
+    targets
+}
+
+// The truest "original" content for a managed file: prefer the oldest per-file
+// backup left by an earlier run (that predates any modification), otherwise the
+// file's current content. Returns (existed, content).
+fn original_baseline_content(id: &str, name: &str, path: &Path) -> (bool, Option<String>) {
+    if let Some(oldest) = backups_for(id, name, path).last() {
+        if let Ok(raw) = fs::read_to_string(&oldest.backup_path) {
+            if let Ok(payload) = serde_json::from_str::<BackupPayload>(&raw) {
+                return (payload.original_existed, Some(payload.content));
+            }
+        }
+    }
+    if path.is_file() {
+        if let Ok(content) = fs::read_to_string(path) {
+            return (true, Some(content));
+        }
+    }
+    (false, None)
+}
+
+// Capture a one-time pristine snapshot of every managed file the first time the
+// app launches. Guarded by the manifest so the original state is never
+// overwritten by later modifications.
+fn ensure_baseline_snapshot() -> Result<(), String> {
+    let directory = baseline_directory();
+    let manifest_path = directory.join("manifest.json");
+    if manifest_path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for (index, (id, name, path)) in all_managed_targets().into_iter().enumerate() {
+        let (existed, content) = original_baseline_content(&id, &name, &path);
+        let stored_file = format!("{index:04}.bin");
+        if existed {
+            if let Some(content) = &content {
+                atomic_write_bytes(&directory.join(&stored_file), content.as_bytes())?;
+                let _ = protect_private_file(&directory.join(&stored_file));
+            }
+        }
+        entries.push(BaselineEntry {
+            tool_id: id,
+            tool_name: name,
+            original_path: path.display().to_string(),
+            original_existed: existed,
+            stored_file,
+        });
+    }
+    let manifest = BaselineManifest {
+        created_at: chrono_stamp(),
+        entries,
+    };
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
+    )?;
+    protect_private_file(&manifest_path)
+}
+
+fn read_baseline_manifest() -> Option<BaselineManifest> {
+    let manifest_path = baseline_directory().join("manifest.json");
+    serde_json::from_str(&fs::read_to_string(manifest_path).ok()?).ok()
+}
+
+fn provenance_path() -> PathBuf {
+    home_path(".9router-model-selector/optimizer-provenance.json")
+}
+
+fn read_provenance() -> ProvenanceStore {
+    fs::read_to_string(provenance_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+// Persist one optimizer install. De-dups by (feature, tool) so re-clicking an
+// install replaces the prior record instead of stacking duplicate undo steps.
+fn record_provenance(entry: ProvenanceEntry) -> Result<(), String> {
+    let mut store = read_provenance();
+    store
+        .entries
+        .retain(|existing| !(existing.feature == entry.feature && existing.tool == entry.tool));
+    store.entries.push(entry);
+    let path = provenance_path();
+    atomic_write(
+        &path,
+        &serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?,
+    )?;
+    protect_private_file(&path)
+}
+
+fn clear_provenance() {
+    let _ = fs::remove_file(provenance_path());
+}
+
+// Best-effort check whether a plugin id already appears in a tool's plugin list.
+// None = could not determine (CLI missing/failed) → callers treat as pre-existing.
+fn plugin_present(tool: &str, needle: &str) -> Option<bool> {
+    let (program, args): (&str, &[&str]) = match tool {
+        "claude" => ("claude", &["plugin", "list", "--json"]),
+        "codex" => ("codex", &["plugin", "list", "--json"]),
+        "factory" => ("droid", &["plugin", "list"]),
+        "copilot-cli" => ("copilot", &["plugin", "list"]),
+        "pi" => ("pi", &["list"]),
+        "antigravity" => ("agy", &["plugin", "list"]),
+        _ => return None,
+    };
+    let mut command = installed_command(program).ok()?;
+    command.args(args);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some(text.contains(needle))
+}
+
+// True when the optimizer already exists on the machine, so a restore must keep
+// it. Conservative: unknown detection (None) is treated as pre-existing.
+fn optimizer_preexists(feature: &str, tool: &str) -> bool {
+    if feature == "rtk" {
+        let ours = home_path(".9router-model-selector/bin/rtk.exe");
+        return match command_path("rtk") {
+            Some(path) => path != ours,
+            None => false,
+        };
+    }
+    let needle = feature; // "ponytail" / "superpowers" both appear by name in listings.
+    plugin_present(tool, needle).unwrap_or(true)
+}
+
+// The undo steps for an optimizer install, recorded verbatim at install time.
+// Returns (uninstall command arrays, note, rtk_path_dir, rtk_binary).
+fn optimizer_uninstall_plan(
+    feature: &str,
+    tool: &str,
+) -> (Vec<Vec<String>>, String, String, String) {
+    let cmd = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let none = (Vec::new(), String::new(), String::new(), String::new());
+    match (feature, tool) {
+        ("rtk", _) => {
+            #[cfg(windows)]
+            {
+                let bin = home_path(".9router-model-selector/bin/rtk.exe");
+                let dir = bin
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                (Vec::new(), String::new(), dir, bin.display().to_string())
+            }
+            #[cfg(not(windows))]
+            {
+                (
+                    Vec::new(),
+                    "RTK was installed via its upstream script; remove it with your package manager if you no longer want it."
+                        .into(),
+                    String::new(),
+                    String::new(),
+                )
+            }
+        }
+        ("ponytail", "claude") => (
+            vec![
+                cmd(&["claude", "plugin", "uninstall", "ponytail@ponytail", "--scope", "user", "--yes"]),
+                cmd(&["claude", "plugin", "marketplace", "remove", "ponytail"]),
+            ],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("ponytail", "codex") => (
+            Vec::new(),
+            "Codex: remove the Ponytail plugin manually via your Codex plugin CLI.".into(),
+            String::new(),
+            String::new(),
+        ),
+        ("ponytail", "copilot-cli") => (
+            vec![
+                cmd(&["copilot", "plugin", "uninstall", "ponytail@ponytail"]),
+                cmd(&["copilot", "plugin", "marketplace", "remove", "ponytail"]),
+            ],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("ponytail", "pi") => (
+            Vec::new(),
+            "Pi: remove Ponytail manually via `pi` if you no longer want it.".into(),
+            String::new(),
+            String::new(),
+        ),
+        ("ponytail", "gemini") | ("ponytail", "antigravity") | ("ponytail", "hermes")
+        | ("ponytail", "openclaw") => (
+            Vec::new(),
+            format!("{tool}: remove the Ponytail plugin manually via its own CLI if you no longer want it."),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "claude") => (
+            vec![cmd(&[
+                "claude", "plugin", "uninstall", "superpowers@claude-plugins-official", "--scope", "user", "--yes",
+            ])],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "codex") => (
+            Vec::new(),
+            "Codex: remove Superpowers manually via your Codex plugin CLI.".into(),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "factory") => (
+            vec![
+                cmd(&["droid", "plugin", "uninstall", "superpowers@superpowers"]),
+                cmd(&["droid", "plugin", "marketplace", "remove", "superpowers"]),
+            ],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "copilot-cli") => (
+            vec![
+                cmd(&["copilot", "plugin", "uninstall", "superpowers@superpowers-marketplace"]),
+                cmd(&["copilot", "plugin", "marketplace", "remove", "superpowers-marketplace"]),
+            ],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "pi") => (
+            vec![cmd(&["pi", "uninstall", "superpowers"])],
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
+        ("superpowers", "antigravity") => (
+            Vec::new(),
+            "Google Antigravity: remove the Superpowers plugin manually via `agy` if you no longer want it.".into(),
+            String::new(),
+            String::new(),
+        ),
+        _ => none,
+    }
+}
+
+// Record an optimizer install unless it targets OpenCode (whose plugin list lives
+// in opencode.json, already covered by the file baseline). `pre_existed` must be
+// sampled BEFORE the install ran, so a fresh install is correctly attributed.
+fn record_optimizer_install(feature: &str, tool: &str, pre_existed: bool) {
+    if tool == "opencode" {
+        return;
+    }
+    let installed_by_9router = !pre_existed;
+    let (uninstall, note, rtk_path_dir, rtk_binary) = optimizer_uninstall_plan(feature, tool);
+    let _ = record_provenance(ProvenanceEntry {
+        feature: feature.to_string(),
+        tool: tool.to_string(),
+        installed_by_9router,
+        uninstall,
+        note,
+        rtk_path_dir,
+        rtk_binary,
+    });
+}
+
+#[tauri::command]
+fn baseline_status() -> BaselineStatus {
+    match read_baseline_manifest() {
+        Some(manifest) => BaselineStatus {
+            captured: true,
+            created_at: Some(manifest.created_at),
+            file_count: manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.original_existed)
+                .count(),
+        },
+        None => BaselineStatus {
+            captured: false,
+            created_at: None,
+            file_count: 0,
+        },
+    }
+}
+
+// Undo the non-file optimizer installs the app is responsible for. Runs BEFORE
+// the file restore so plugin CLIs act while their config files are still intact.
+// Best-effort: failures are collected into the report, never aborting the restore.
+fn restore_optimizers(report: &mut Vec<String>) {
+    let store = read_provenance();
+    let mut uninstalled = 0usize;
+    let mut kept = 0usize;
+    for entry in store.entries {
+        if !entry.installed_by_9router {
+            kept += 1;
+            continue;
+        }
+        let mut acted = false;
+        for command in &entry.uninstall {
+            let Some((program, args)) = command.split_first() else {
+                continue;
+            };
+            match installed_command(program) {
+                Ok(mut cmd) => {
+                    cmd.args(args);
+                    if let Err(error) = run_command(&mut cmd) {
+                        report.push(format!(
+                            "{} · {}: uninstall step failed ({error})",
+                            entry.feature, entry.tool
+                        ));
+                    } else {
+                        acted = true;
+                    }
+                }
+                Err(error) => report.push(format!(
+                    "{} · {}: {program} unavailable ({error})",
+                    entry.feature, entry.tool
+                )),
+            }
+        }
+        #[cfg(windows)]
+        {
+            if !entry.rtk_path_dir.is_empty() {
+                let _ = remove_dir_from_user_path(Path::new(&entry.rtk_path_dir));
+                acted = true;
+            }
+            if !entry.rtk_binary.is_empty() {
+                let binary = PathBuf::from(&entry.rtk_binary);
+                if binary.is_file() {
+                    let _ = fs::remove_file(&binary);
+                }
+            }
+        }
+        if !entry.note.is_empty() {
+            report.push(entry.note.clone());
+        }
+        if acted {
+            uninstalled += 1;
+        }
+    }
+    if uninstalled > 0 || kept > 0 {
+        report.push(format!(
+            "Optimizers: {uninstalled} uninstalled, {kept} kept (pre-existing)."
+        ));
+    }
+}
+
+#[cfg(windows)]
+fn remove_dir_from_user_path(dir: &Path) -> Result<(), String> {
+    let dir_str = dir.display().to_string();
+    // Pass the directory through an environment variable rather than
+    // interpolating it into the script, so a path with quotes or `;` cannot
+    // break out of the command.
+    let script = "$d = $env:RTK_TARGET_DIR; \
+        $current = [Environment]::GetEnvironmentVariable('Path', 'User'); \
+        if ([string]::IsNullOrEmpty($current)) { $current = '' } \
+        $parts = $current -split ';' | Where-Object { $_ -ne '' -and $_ -ne $d }; \
+        $updated = ($parts) -join ';'; \
+        [Environment]::SetEnvironmentVariable('Path', $updated, 'User')";
+    let mut command = std::process::Command::new("powershell");
+    command
+        .env("RTK_TARGET_DIR", &dir_str)
+        .args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    run_command(&mut command).map(|_| ())?;
+    // Keep the live process PATH in sync too.
+    if let Some(existing) = std::env::var_os("PATH") {
+        let filtered: Vec<PathBuf> = std::env::split_paths(&existing)
+            .filter(|entry| entry != dir)
+            .collect();
+        if let Ok(joined) = std::env::join_paths(filtered) {
+            std::env::set_var("PATH", joined);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_baseline() -> Result<String, String> {
+    let directory = baseline_directory();
+    let manifest =
+        read_baseline_manifest().ok_or_else(|| "No original snapshot was captured yet.".to_string())?;
+    let mut report: Vec<String> = Vec::new();
+    // Undo plugin/marketplace/PATH side effects before touching config files.
+    restore_optimizers(&mut report);
+    let mut restored = 0usize;
+    let mut removed = 0usize;
+    for entry in manifest.entries {
+        let original_path = PathBuf::from(&entry.original_path);
+        // Snapshot the current state first so this restore is itself reversible.
+        let _ = backup(&entry.tool_id, &entry.tool_name, &original_path);
+        if entry.original_existed {
+            let content = fs::read(directory.join(&entry.stored_file))
+                .map_err(|e| format!("{}: {e}", entry.original_path))?;
+            atomic_write_bytes(&original_path, &content)?;
+            restored += 1;
+        } else if original_path.is_file() {
+            // Only ever delete a regular file the app itself created. Never a
+            // directory (e.g. ~/.cursor, ~/.vscode/extensions).
+            fs::remove_file(&original_path).map_err(|e| e.to_string())?;
+            removed += 1;
+        }
+    }
+    // Clear provenance unconditionally last, so a second restore is a no-op and
+    // no uninstall step is ever replayed.
+    clear_provenance();
+    let mut message = format!(
+        "Restored the original setup: {restored} file(s) rewritten, {removed} added-file(s) removed."
+    );
+    for line in report {
+        message.push('\n');
+        message.push_str(&line);
+    }
+    Ok(message)
 }
 
 fn json_config(
@@ -3515,7 +4021,45 @@ fn ensure_windows_rtk() -> Result<PathBuf, String> {
         }
         atomic_write_bytes(&path, RTK_WINDOWS_BINARY)?;
     }
+    if let Some(parent) = path.parent() {
+        // The binary is dropped into a private folder that is not on PATH, so
+        // `rtk` would be unusable from a terminal or from Claude Code even after
+        // a successful install. Add it to the persistent user PATH.
+        let _ = ensure_dir_on_user_path(parent);
+    }
     Ok(path)
+}
+
+#[cfg(windows)]
+fn ensure_dir_on_user_path(dir: &Path) -> Result<(), String> {
+    let dir_str = dir.display().to_string();
+    // Pass the directory through an environment variable rather than
+    // interpolating it into the script, so a path with quotes or `;` cannot
+    // break out of the command.
+    let script = "$d = $env:RTK_TARGET_DIR; \
+        $current = [Environment]::GetEnvironmentVariable('Path', 'User'); \
+        if ([string]::IsNullOrEmpty($current)) { $current = '' } \
+        $parts = $current -split ';' | Where-Object { $_ -ne '' }; \
+        if ($parts -notcontains $d) { \
+            $updated = (@($parts) + $d) -join ';'; \
+            [Environment]::SetEnvironmentVariable('Path', $updated, 'User') \
+        }";
+    let mut command = std::process::Command::new("powershell");
+    command
+        .env("RTK_TARGET_DIR", &dir_str)
+        .args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    run_command(&mut command).map(|_| ())?;
+    // Make the directory visible to this process too, so any child the app
+    // spawns during the rest of this run can already resolve `rtk`.
+    let existing = std::env::var_os("PATH");
+    let mut entries = vec![PathBuf::from(&dir_str)];
+    if let Some(existing) = &existing {
+        entries.extend(std::env::split_paths(existing));
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        std::env::set_var("PATH", joined);
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -3683,7 +4227,22 @@ fn install_optimizer(
     target_tool: String,
     workspace_path: Option<String>,
 ) -> Result<String, String> {
-    match (tool.as_str(), target_tool.as_str()) {
+    // Sample pre-existing state BEFORE installing so a fresh install is
+    // attributed to the app and later reverted by "Restore original setup".
+    let pre_existed = optimizer_preexists(&tool, &target_tool);
+    let result = install_optimizer_inner(&tool, &target_tool, workspace_path);
+    if result.is_ok() {
+        record_optimizer_install(&tool, &target_tool, pre_existed);
+    }
+    result
+}
+
+fn install_optimizer_inner(
+    tool: &str,
+    target_tool: &str,
+    workspace_path: Option<String>,
+) -> Result<String, String> {
+    match (tool, target_tool) {
         ("rtk", "claude") => {
             #[cfg(windows)]
             run_rtk_init(&["init", "-g", "--claude-md"], None)?;
@@ -4116,6 +4675,14 @@ mod tests {
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|_app| {
+            // Snapshot the user's original setup once, before any apply step can
+            // modify it, so a full restore is always available.
+            if let Err(error) = ensure_baseline_snapshot() {
+                eprintln!("baseline snapshot failed: {error}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             detect_tools,
             detect_optimizer_tools,
@@ -4126,6 +4693,8 @@ pub fn run() {
             apply_configuration,
             list_backups,
             restore_backup,
+            baseline_status,
+            restore_baseline,
             install_optimizer
         ])
         .run(tauri::generate_context!())
