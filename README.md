@@ -44,7 +44,7 @@ The app uses a guided setup flow:
 3. **Explore models** — fetches the enabled chat and capability-specific model endpoints.
 4. **Assign models** — selects a direct model for each coding tool. It does not depend on a 9router combo.
 5. **Configure limits** — reviews or edits maximum input and output tokens so each tool can compact before the selected model overflows.
-6. **Route capabilities** — assigns one or more available models to image generation, web search/fetch, speech, transcription, embeddings, and other supported skills.
+6. **Route capabilities** — assigns one or more available models to image generation, web search/fetch, speech, transcription, embeddings, and other supported skills. Every selected capability model is invoked for each request.
 7. **Choose integrations** — optionally installs local skills and token-saving adapters.
 8. **Review and apply** — previews changes, validates the key and selected model IDs again, creates backups, and writes the supported configurations.
 9. **Restore if needed** — restores a timestamped original-state snapshot from the app.
@@ -74,8 +74,9 @@ Other supported coding tools generally use one selected default model plus that 
 | OpenClaw | Automatic | Configures the provider, primary model, context/output limits, and compaction through OpenClaw's configuration interface. |
 | Factory Droid | Automatic | Adds a 9router BYOK model with context, output, and compaction limits to `~/.factory/settings.json`. |
 | Pi | Automatic | Adds the provider and model metadata to `~/.pi/agent/models.json` and selects it in `~/.pi/agent/settings.json`. |
-| Cursor | Guided | Shows the required OpenAI-compatible endpoint/model settings without silently replacing Cursor-managed credentials. |
-| Cline, Roo Code, Kilo Code | Guided | Provides the selected endpoint and model values; extension-owned secret storage is not edited directly. |
+| Cursor | Guided model setup | Shows the required OpenAI-compatible endpoint/model settings without silently replacing Cursor-managed credentials. Selected capability skills are installed globally. |
+| Cline, Kilo Code | Guided model setup | Provides the selected endpoint and model values without editing extension-owned secret storage. Selected capability skills are installed globally. |
+| Roo Code | Guided | Provides the selected endpoint and model values; no undocumented global skill directory is guessed. |
 | GitHub Copilot for VS Code | Guided | Uses the documented BYOK/model-provider UI instead of modifying VS Code secret storage. |
 | GitHub Copilot CLI | Guided | Shows the required environment-based BYOK setup without editing shell startup files. |
 | Mistral Vibe CLI, Continue, Hermes | Guided | Provides the selected gateway values while avoiding incomplete or unsafe partial configuration. |
@@ -93,7 +94,20 @@ When supported by the gateway, the app explores:
 - Speech-to-text
 - Embeddings
 
-A route can use one or multiple enabled models. This allows, for example, a coding tool to use a Codex model while image generation is routed to Grok, Gemini, or another image-capable provider.
+A route can use one or multiple enabled models. All selected providers run for each capability request rather than acting as silent fallbacks.
+
+For image generation, the exact same prompt is sent to every selected image model. The native helper creates one file per model and returns a JSON summary mapping every output file to its provider/model. This allows a user to compare, for example, a Codex-generated image and a Grok-generated image side by side.
+
+Selected capability skills are installed automatically for verified global Agent Skills hosts:
+
+- Claude Code
+- Codex
+- Cursor
+- Cline
+- Kilo Code
+- OpenCode
+
+The generated `SKILL.md` files contain no API key. They invoke the installed desktop app as a native cross-platform helper; the private route configuration is stored separately under `~/.9router-model-selector/`.
 
 ## Optional integrations
 
@@ -120,6 +134,7 @@ Project-scoped adapters require a workspace folder. The app reports guided steps
 - A timestamped original-state backup is created before each change.
 - Backups can be restored from the app.
 - API keys are hidden from previews and sent only to the configured gateway.
+- Capability-route credentials are stored in a private local configuration file and are never embedded in generated skill instructions.
 - Extension-managed credential stores and shell startup files are not silently modified.
 
 ## Run from source
