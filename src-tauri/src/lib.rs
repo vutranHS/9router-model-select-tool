@@ -260,15 +260,21 @@ fn candidates() -> Vec<(String, String, String, PathBuf)> {
 }
 
 fn executable_names(command: &str) -> Vec<String> {
-    let mut names = vec![command.into()];
     if cfg!(windows) {
-        names.extend([
+        // On Windows, npm-installed CLIs ship both an extensionless shell
+        // script (e.g. `npm`, `npx`, `claude`) and an executable `.cmd`/`.exe`
+        // wrapper in the same folder. Prefer the runnable variants first; the
+        // bare script would fail with "%1 is not a valid Win32 application"
+        // (os error 193) if executed directly.
+        vec![
             format!("{command}.exe"),
             format!("{command}.cmd"),
             format!("{command}.bat"),
-        ]);
+            command.into(),
+        ]
+    } else {
+        vec![command.into()]
     }
-    names
 }
 
 fn command_path(command: &str) -> Option<PathBuf> {
