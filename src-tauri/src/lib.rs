@@ -950,10 +950,18 @@ fn ensure_cloakbrowser_bundle() -> Result<(PathBuf, PathBuf), String> {
     atomic_write(&directory.join("server.mjs"), CLOAKBROWSER_SERVER)?;
     atomic_write(&directory.join("package.json"), CLOAKBROWSER_PACKAGE)?;
 
+    let node = command_path("node")
+        .ok_or_else(|| "Node.js 20+ is required to run CloakBrowser.".to_string())?;
+
     if !directory.join("node_modules").is_dir() {
         let directory_arg = directory.display().to_string();
         let mut npm = installed_command("npm")
             .map_err(|_| "Node.js and npm are required to enable CloakBrowser.".to_string())?;
+        // npm is itself a node script; ensure the node binary's directory is on
+        // PATH so its shebang resolves even when npm lives elsewhere (e.g. nvm).
+        if let Some(node_dir) = node.parent() {
+            prepend_path_dir(&mut npm, node_dir);
+        }
         npm.args([
             "install",
             "--omit=dev",
@@ -966,8 +974,6 @@ fn ensure_cloakbrowser_bundle() -> Result<(PathBuf, PathBuf), String> {
             .map_err(|error| format!("CloakBrowser dependency install failed: {error}"))?;
     }
 
-    let node = command_path("node")
-        .ok_or_else(|| "Node.js 20+ is required to run CloakBrowser.".to_string())?;
     Ok((directory.join("server.mjs"), node))
 }
 
@@ -2988,9 +2994,38 @@ fn command_for_path(path: &Path) -> std::process::Command {
         let command_processor = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
         let mut command = std::process::Command::new(command_processor);
         command.args(["/D", "/C"]).arg(path);
+        if let Some(parent) = path.parent() {
+            prepend_path_dir(&mut command, parent);
+        }
         return command;
     }
-    std::process::Command::new(path)
+    let mut command = std::process::Command::new(path);
+    // GUI launches (Finder/Dock on macOS, etc.) inherit a minimal PATH that
+    // omits the directory holding node/npm. Since we locate binaries outside of
+    // PATH, make sure the resolved binary's own directory is visible to the
+    // child so shebangs like `#!/usr/bin/env node` can find their interpreter.
+    if let Some(parent) = path.parent() {
+        prepend_path_dir(&mut command, parent);
+    }
+    command
+}
+
+fn prepend_path_dir(command: &mut std::process::Command, directory: &Path) {
+    if directory.as_os_str().is_empty() {
+        return;
+    }
+    let existing = command
+        .get_envs()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .and_then(|(_, value)| value.map(|value| value.to_os_string()))
+        .or_else(|| std::env::var_os("PATH"));
+    let mut entries = vec![directory.to_path_buf()];
+    if let Some(existing) = existing {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        command.env("PATH", joined);
+    }
 }
 
 fn capability_option(args: &[String], name: &str) -> Option<String> {
