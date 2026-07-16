@@ -758,6 +758,32 @@ fn cloakbrowser_directory() -> PathBuf {
     home_path(".9router-model-selector/cloakbrowser")
 }
 
+fn claude_cloakbrowser_is_managed() -> bool {
+    let Ok(raw) = fs::read_to_string(home_path(".claude.json")) else {
+        return false;
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let expected = cloakbrowser_directory()
+        .join("server.mjs")
+        .display()
+        .to_string();
+    config
+        .pointer("/mcpServers/cloakbrowser/args")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|args| {
+            args.iter()
+                .any(|arg| arg.as_str() == Some(expected.as_str()))
+        })
+}
+
+fn remove_claude_cloakbrowser() -> Result<(), String> {
+    let mut remove = installed_command("claude")?;
+    remove.args(["mcp", "remove", "cloakbrowser", "--scope", "user"]);
+    run_command(&mut remove).map(|_| ())
+}
+
 fn cloakbrowser_backup_targets() -> Vec<(String, String, PathBuf)> {
     vec![
         (
@@ -1058,28 +1084,29 @@ fn install_cloakbrowser_for_tools(tool_ids: &[String]) -> Result<Vec<String>, St
     if automatic.contains(&"claude") {
         let mut get = installed_command("claude")?;
         get.args(["mcp", "get", "cloakbrowser"]);
-        if !command_succeeds(&mut get) {
-            let config = home_path(".claude.json");
-            backup(
-                "cloakbrowser-claude-config",
-                "CloakBrowser · Claude Code",
-                &config,
-            )?;
-            let mut claude = installed_command("claude")?;
-            claude.args([
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                "--transport",
-                "stdio",
-                "cloakbrowser",
-                "--",
-                &node.display().to_string(),
-                &server.display().to_string(),
-            ]);
-            run_command(&mut claude)?;
+        let config = home_path(".claude.json");
+        backup(
+            "cloakbrowser-claude-config",
+            "CloakBrowser · Claude Code",
+            &config,
+        )?;
+        if command_succeeds(&mut get) {
+            remove_claude_cloakbrowser()?;
         }
+        let mut claude = installed_command("claude")?;
+        claude.args([
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            "--transport",
+            "stdio",
+            "cloakbrowser",
+            "--",
+            &node.display().to_string(),
+            &server.display().to_string(),
+        ]);
+        run_command(&mut claude)?;
         write_bundled_file(
             "cloakbrowser-claude-skill",
             "CloakBrowser · Claude skill",
@@ -2421,6 +2448,7 @@ fn remove_dir_from_user_path(dir: &Path) -> Result<(), String> {
 
 #[tauri::command]
 fn restore_baseline() -> Result<String, String> {
+    let remove_managed_cloakbrowser = claude_cloakbrowser_is_managed();
     let directory = baseline_directory();
     let manifest =
         read_baseline_manifest().ok_or_else(|| "No original snapshot was captured yet.".to_string())?;
@@ -2444,6 +2472,10 @@ fn restore_baseline() -> Result<String, String> {
             fs::remove_file(&original_path).map_err(|e| e.to_string())?;
             removed += 1;
         }
+    }
+    if remove_managed_cloakbrowser {
+        remove_claude_cloakbrowser()?;
+        report.push("Claude Code: managed CloakBrowser MCP removed.".into());
     }
     // Clear provenance unconditionally last, so a second restore is a no-op and
     // no uninstall step is ever replayed.

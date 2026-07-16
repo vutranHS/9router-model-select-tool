@@ -12,6 +12,7 @@ import { ensureBinary, launchPersistentContext } from "cloakbrowser";
 const blockedResourceTypes = new Set(["stylesheet", "image", "media", "font"]);
 const blockedHosts = new Set(["localhost", "local", "0.0.0.0"]);
 const maxTextLength = 100_000;
+const redirectSettleMs = 10_000;
 const activeCleanups = new Set();
 
 function withTimeout(promise, timeoutMs, message) {
@@ -70,6 +71,18 @@ async function assertPublicHttpUrl(rawUrl) {
   return url.href;
 }
 
+function isNavigationContextError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Execution context was destroyed") && message.includes("navigation");
+}
+
+async function extractPage(page) {
+  const finalUrl = await assertPublicHttpUrl(page.url());
+  const title = (await page.title()).trim();
+  const fullText = await page.evaluate(() => document.body?.innerText?.replace(/\n{3,}/g, "\n\n").trim() || "");
+  return { finalUrl, title, fullText };
+}
+
 async function readUrl({ url, timeoutMs = 30000 }) {
   const startUrl = await assertPublicHttpUrl(url);
   await ensureBinary();
@@ -122,10 +135,17 @@ async function readUrl({ url, timeoutMs = 30000 }) {
       const response = await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
       await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 10000) }).catch(() => {});
 
-      const finalUrl = await assertPublicHttpUrl(page.url());
-      const title = (await page.title()).trim();
-      const fullText = await page.evaluate(() => document.body?.innerText?.replace(/\n{3,}/g, "\n\n").trim() || "");
+      let extracted;
+      try {
+        extracted = await extractPage(page);
+      } catch (error) {
+        if (!isNavigationContextError(error)) throw error;
+        await page.waitForLoadState("load", { timeout: Math.min(timeoutMs, redirectSettleMs) });
+        await page.waitForTimeout(redirectSettleMs);
+        extracted = await extractPage(page);
+      }
 
+      const { finalUrl, title, fullText } = extracted;
       return {
         url: finalUrl,
         status: response?.status() ?? null,
