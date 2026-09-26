@@ -2496,6 +2496,7 @@ fn json_config(
     base_url: &str,
     compact_window: Option<u64>,
     optimizations: &Optimizations,
+    per_model_effort: bool,
 ) -> serde_json::Value {
     let mut env = serde_json::json!({"ANTHROPIC_BASE_URL":base_url,"ANTHROPIC_AUTH_TOKEN":token,"ANTHROPIC_MODEL":routes.default_model,"ANTHROPIC_DEFAULT_OPUS_MODEL":routes.opus,"ANTHROPIC_DEFAULT_SONNET_MODEL":routes.sonnet,"ANTHROPIC_DEFAULT_HAIKU_MODEL":routes.haiku});
     if let Some(window) = compact_window {
@@ -2504,11 +2505,39 @@ fn json_config(
     }
     let effort = claude_effort(&optimizations.effort_level);
     let mut settings = serde_json::json!({"env": env,"attribution":{"commit":"","pr":""},"includeGitInstructions":false,"effortLevel":effort,"theme":"dark"});
+    if per_model_effort {
+        // Top-level effortLevel no longer applies to models released after /effort
+        // became per-model (e.g. Opus 5.5), so also pin it for every mapped route.
+        let mut per_model = serde_json::Map::new();
+        for model in [&routes.default_model, &routes.opus, &routes.sonnet, &routes.haiku] {
+            per_model.insert(model.clone(), serde_json::json!({"effortLevel": effort}));
+        }
+        settings["modelSettings"] = serde_json::Value::Object(per_model);
+    }
     if optimizations.bypass_permissions {
         settings["permissions"] = serde_json::json!({"defaultMode":"bypassPermissions"});
         settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
     }
     settings
+}
+
+/// Claude Code saves effort per model under `modelSettings` since 2.1.251.
+const CLAUDE_PER_MODEL_EFFORT_SINCE: (u64, u64, u64) = (2, 1, 251);
+
+fn parse_claude_version(output: &str) -> Option<(u64, u64, u64)> {
+    // `claude --version` prints e.g. "2.1.283 (Claude Code)".
+    let mut parts = output.split_whitespace().next()?.split('.').map(|part| part.parse().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+fn claude_supports_per_model_effort(version: Option<(u64, u64, u64)>) -> bool {
+    // Unknown version: assume a current install rather than silently skipping the setting.
+    version.map_or(true, |version| version >= CLAUDE_PER_MODEL_EFFORT_SINCE)
+}
+
+fn installed_claude_version() -> Option<(u64, u64, u64)> {
+    let output = run_command(installed_command("claude").ok()?.arg("--version")).ok()?;
+    parse_claude_version(&output)
 }
 
 fn claude_effort(value: &str) -> &str {
@@ -2610,7 +2639,15 @@ fn known_model_limits(model_id: &str) -> Option<(ModelLimits, &'static str)> {
         .map(|(_, model)| model)
         .unwrap_or(model_id)
         .to_ascii_lowercase();
-    let limits = if model == "gpt-5.5" || model.starts_with("gpt-5.6") {
+    let limits = if model.starts_with("gpt-5.6") || model.starts_with("gpt-6") {
+        (
+            ModelLimits {
+                max_input_tokens: 1_000_000,
+                max_output_tokens: 128_000,
+            },
+            "Codex subscription catalog",
+        )
+    } else if model == "gpt-5.5" {
         (
             ModelLimits {
                 max_input_tokens: 272_000,
@@ -2621,7 +2658,11 @@ fn known_model_limits(model_id: &str) -> Option<(ModelLimits, &'static str)> {
     } else if matches!(
         model.as_str(),
         "claude-fable-5"
+            | "claude-fable-5-1"
             | "claude-mythos-5"
+            | "claude-mythos-5-1"
+            | "claude-opus-5-5"
+            | "claude-opus-5"
             | "claude-opus-4-8"
             | "claude-opus-4-7"
             | "claude-opus-4-6"
@@ -3073,6 +3114,8 @@ fn fetch_models(base_url: &str, token: &str, suffix: &str) -> Result<Vec<Gateway
                 .get("max_input_tokens")
                 .or_else(|| model.get("context_window"))
                 .or_else(|| model.get("contextWindow"))
+                .or_else(|| model.get("context_length"))
+                .or_else(|| model.pointer("/capabilities/contextWindow"))
                 .and_then(serde_json::Value::as_u64)
                 .or_else(|| {
                     model
@@ -3083,6 +3126,8 @@ fn fetch_models(base_url: &str, token: &str, suffix: &str) -> Result<Vec<Gateway
                 .get("max_output_tokens")
                 .or_else(|| model.get("max_tokens"))
                 .or_else(|| model.get("maxTokens"))
+                .or_else(|| model.get("max_completion_tokens"))
+                .or_else(|| model.pointer("/capabilities/maxOutput"))
                 .and_then(serde_json::Value::as_u64)
                 .or_else(|| {
                     model
@@ -3090,14 +3135,22 @@ fn fetch_models(base_url: &str, token: &str, suffix: &str) -> Result<Vec<Gateway
                         .and_then(serde_json::Value::as_u64)
                 });
             let known = known_model_limits(&id);
-            let max_input_tokens = declared_input
-                .or_else(|| known.as_ref().map(|(limits, _)| limits.max_input_tokens));
-            let max_output_tokens = declared_output
-                .or_else(|| known.as_ref().map(|(limits, _)| limits.max_output_tokens));
-            let limits_source = if declared_input.is_some() || declared_output.is_some() {
-                Some("9router metadata".to_string())
-            } else {
-                known.map(|(_, source)| source.to_string())
+            // Curated limits win: 9router metadata under-reports newer windows
+            // (e.g. 272K for 1M-context gpt-5.6+); it only fills unknown models.
+            let max_input_tokens = known
+                .as_ref()
+                .map(|(limits, _)| limits.max_input_tokens)
+                .or(declared_input);
+            let max_output_tokens = known
+                .as_ref()
+                .map(|(limits, _)| limits.max_output_tokens)
+                .or(declared_output);
+            let limits_source = match known {
+                Some((_, source)) => Some(source.to_string()),
+                None if declared_input.is_some() || declared_output.is_some() => {
+                    Some("9router metadata".to_string())
+                }
+                None => None,
             };
             Some(GatewayModel {
                 id,
@@ -3388,6 +3441,7 @@ fn apply_configuration(request: ApplyRequest) -> Result<Vec<String>, String> {
                     &request.base_url,
                     compact_window,
                     &settings,
+                    claude_supports_per_model_effort(installed_claude_version()),
                 ),
             );
             atomic_write(
@@ -4540,6 +4594,30 @@ mod tests {
     }
 
     #[test]
+    fn claude_effort_is_pinned_per_model_on_supported_versions() {
+        assert_eq!(parse_claude_version("2.1.283 (Claude Code)"), Some((2, 1, 283)));
+        assert_eq!(parse_claude_version("garbage"), None);
+        assert!(!claude_supports_per_model_effort(Some((2, 1, 250))));
+        assert!(claude_supports_per_model_effort(Some((2, 1, 251))));
+        assert!(claude_supports_per_model_effort(None));
+
+        let routes = ModelRoutes {
+            default_model: "cc/claude-opus-5-5".into(),
+            opus: "cc/claude-opus-5-5".into(),
+            sonnet: "cc/claude-sonnet-5".into(),
+            haiku: "cx/gpt-5.6-luna".into(),
+        };
+        let optimizations = Optimizations { bypass_permissions: false, effort_level: "xhigh".into() };
+        let settings = json_config(&routes, "t", "http://x", None, &optimizations, true);
+        assert_eq!(settings["effortLevel"], "xhigh");
+        assert_eq!(settings["modelSettings"]["cc/claude-opus-5-5"]["effortLevel"], "xhigh");
+        assert_eq!(settings["modelSettings"]["cx/gpt-5.6-luna"]["effortLevel"], "xhigh");
+        let legacy = json_config(&routes, "t", "http://x", None, &optimizations, false);
+        assert!(legacy.get("modelSettings").is_none());
+        assert!(known_model_limits("cc/claude-opus-5-5").is_some());
+    }
+
+    #[test]
     fn codex_profile_has_context_and_compaction_threshold() {
         let config = codex_config(
             &ModelRoutes {
@@ -4595,7 +4673,9 @@ mod tests {
     #[test]
     fn known_limits_distinguish_subscription_codex_and_claude_models() {
         let (codex, codex_source) = known_model_limits("cx/gpt-5.6-sol").unwrap();
-        assert_eq!(codex.max_input_tokens, 272_000);
+        assert_eq!(codex.max_input_tokens, 1_000_000);
+        assert_eq!(known_model_limits("cx/gpt-6-astra").unwrap().0.max_input_tokens, 1_000_000);
+        assert_eq!(known_model_limits("cx/gpt-5.5").unwrap().0.max_input_tokens, 272_000);
         assert_eq!(codex.max_output_tokens, 128_000);
         assert_eq!(codex_source, "Codex subscription catalog");
 
